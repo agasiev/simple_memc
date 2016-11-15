@@ -131,16 +131,18 @@ if ($_POST["executed"] == 1) {
     <h2>Simple memcache web client</h2>
     <div>
         <form method="post" action="index.php">
+            <label>Command:</label><br>
             <select name="command" id="command" onchange="update_placeholder();">
                 <option value="get"<?= $command == '' || $command == 'get' ? 'selected' : '' ?>>get</option>
                 <option value="set"<?= $command == 'set' ? 'selected' : '' ?>>set</option>
                 <option value="delete"<?= $command == 'delete' ? 'selected' : '' ?>>delete</option>
                 <option value="flush_all"<?= $command == 'flush_all' ? 'selected' : '' ?>>flush_all</option>
                 <option value="stats"<?= $command == 'stats' ? 'selected' : '' ?>>stats</option>
-            </select>
-            <input type="hidden" name="executed" value="1"/><br>
+            </select><br><br>
+            <label>Parameters:</label><br>
             <textarea cols="50" rows="6" name="param" id="param"
                       placeholder="key_name" style="margin-top: 10px; margin-bottom: 10px;"><?= $param ?></textarea><br>
+            <input type="hidden" name="executed" value="1"/><br>
             <input type="submit" value="Execute!"/>
         </form>
     </div>
