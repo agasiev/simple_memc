@@ -1,5 +1,10 @@
 <?php
 
+/*
+ * Веб-клиент для нашего простого мемкэша.
+ * Предусмотрен только ограниченный набор команд: get, set, delete, flush_all, stats.
+ */
+
 error_reporting(E_ALL);
 
 /**
@@ -16,17 +21,14 @@ function memc_send_request($request, $timeout = 10)
     $host = gethostbyname('127.0.0.1');
     $port = 12345;
 
-    $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-    if ($socket === false) {
+    if (($socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP)) === false) {
         return "Failed socket_create() with reason: ".socket_strerror(socket_last_error());
     }
 
     socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, array('sec' => $timeout, 'usec' => 0));
     socket_set_option($socket, SOL_SOCKET, SO_SNDTIMEO, array('sec' => $timeout, 'usec' => 0));
 
-    $result = socket_connect($socket, $host, $port);
-
-    if ($result === false) {
+    if (($result = socket_connect($socket, $host, $port)) === false) {
         if (!socket_last_error()) {
             return "socket_connect() timeout.";
         } else {
@@ -79,8 +81,9 @@ if ($_POST["executed"] == 1) {
             $request = $command;
             break;
         case 'set':
-            if (preg_match('/^[a-zA-Z0-9\_]+\s+\d+\\\\r\\\\n.+/is', $param)) {
-                $request = "$command $param";
+            $prepared_param = implode("\\r\\n", array_map(trim, explode("\n", $param)));
+            if (preg_match('/^[a-zA-Z0-9\_]+\s+\d+\\r\\n.+/is', $param)) {
+                $request = "$command $prepared_param";
             }
     }
 
@@ -90,8 +93,8 @@ if ($_POST["executed"] == 1) {
         $request = '[Bad request]';
     }
 
-    $request = nl2br(htmlspecialchars($request));
-    $response = nl2br(htmlspecialchars($response));
+    $request = nl2br(htmlspecialchars(str_replace("\\r\\n", "\r\n", $request)));
+    $response = nl2br(htmlspecialchars(str_replace("\\r\\n", "\r\n", $response)));
 }
 
 ?>
@@ -106,7 +109,7 @@ if ($_POST["executed"] == 1) {
 
             switch (command.value) {
                 case "set":
-                    param.placeholder = "key_name expire_time\\r\\nvalue";
+                    param.placeholder = "key_name expire_time\r\nvalue";
                     break;
                 case "get":
                     param.placeholder = "key_name";
@@ -135,8 +138,9 @@ if ($_POST["executed"] == 1) {
                 <option value="flush_all"<?= $command == 'flush_all' ? 'selected' : '' ?>>flush_all</option>
                 <option value="stats"<?= $command == 'stats' ? 'selected' : '' ?>>stats</option>
             </select>
-            <input type="hidden" name="executed" value="1"/>&nbsp;
-            <input type="text" name="param" id="param" size="50" placeholder="key_name" value="<?= $param ?>"/>&nbsp;
+            <input type="hidden" name="executed" value="1"/><br>
+            <textarea cols="50" rows="6" name="param" id="param"
+                      placeholder="key_name" style="margin-top: 10px; margin-bottom: 10px;"><?= $param ?></textarea><br>
             <input type="submit" value="Execute!"/>
         </form>
     </div>

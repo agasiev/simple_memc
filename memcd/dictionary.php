@@ -1,5 +1,14 @@
 <?php
 
+/*
+ * Хэш таблица с открытой адресацией на базе массивов PHP (игнорируем тот факт, что массивы в PHP суть и есть
+ * хэш таблицы и рассматриваем их как C'style массивы).
+ */
+
+
+// Т.к. объекты использвать запрещено, берем за основу все те же массивы
+// и объявляем соотв. индексам константы, чтобы избежать магических чисел в коде.
+
 define("HASHTABLE_KEY", 0);
 define("HASHTABLE_VALUE", 1);
 define("HASHTABLE_DELETED", 2);
@@ -10,10 +19,10 @@ define("DICT_DELETED", 1);
 define("DICT_HASH", 2);
 define("DICT_TABLE", 3);
 
-define("INITIAL_SIZE", 4);
-define("EXTEND_STEP", 4);       // Шаг увеличения размерности таблицы
-define("CLEANUP_THRESHOLD", 0.1);  // % от удаленных в таблице, после которого следует сделать чистку
-define("FREE_THRESHOLD", 0.2);     // % от свободных ячеек таблицы, опускаясь ниже которого ее следует расширить
+define("INITIAL_SIZE", 1024);      // Начальный размер таблицы.
+define("EXTEND_STEP", 1024);       // Шаг увеличения размерности таблицы.
+define("CLEANUP_THRESHOLD", 0.1);  // % от удаленных в таблице, после которого следует сделать чистку.
+define("FREE_THRESHOLD", 0.2);     // % от свободных ячеек таблицы, опускаясь ниже которого ее следует расширить.
 
 /**
  * Инициализируем структуру ассоциативного массива.
@@ -33,19 +42,22 @@ function dict_init($hash_function='crc32', $initial_size = INITIAL_SIZE) {
     }
 
     if (!is_callable($hash_function)) {
-        throw new InvalidArgumentException('Wrong $hash_function is not callable.');
+        throw new InvalidArgumentException('$hash_function is not callable.');
     }
 
     return array(
-        $initial_size,  // Кол-во пустых ячеек в массиве
-        0,              // Кол-во удаленных ячеек в массиве
-        $hash_function, // Ф-я хэширования string -> int
+        $initial_size,  // Кол-во пустых ячеек в массиве     DICT_FREE
+        0,              // Кол-во удаленных ячеек в массиве  DICT_DELETED
+        $hash_function, // Ф-я хэширования string -> int     DICT_HASH
 
-        array_fill(
+        array_fill(     // хэш-таблица                       DICT_TABLE
             0,
             $initial_size,
-            array(null, null, false, 0) // [ключ, значение, удалено или нет, expire time]
-        ) // хэш-таблица
+            array(null,  // Ключ                             HASHTABLE_KEY
+                  null,  // Значение                         HASHTABLE_VALUE
+                  false, // Удалено или нет                  HASHTABLE_DELETED
+                  0)     // Время протухания ключа           FREE_THRESHOLD
+        )
     );
 }
 
@@ -64,7 +76,7 @@ function dict_init($hash_function='crc32', $initial_size = INITIAL_SIZE) {
  */
 
 function dict_get(&$dict, $key, $default = null) {
-    if (!isset($dict) || !isset($key)) {
+    if (!isset($dict) || !isset($key) || !is_string($key)) {
         throw new InvalidArgumentException('dict_get() some of mandatory variables are not set.');
     }
 
@@ -113,7 +125,7 @@ function dict_get(&$dict, $key, $default = null) {
  */
 
 function dict_set(&$dict, $key, $value = null, $expire = PHP_INT_MAX, $extend = true) {
-    if (!isset($dict) || !isset($key) || !is_string($key) || !is_int($expire) || $expire < 0) {
+    if (!isset($dict) || !isset($key) || !is_string($key) || !is_int($expire) || $expire < 0 || !is_bool($extend)) {
         throw new InvalidArgumentException('dict_set() some of mandatory variables are not set.');
     }
 
@@ -135,9 +147,12 @@ function dict_set(&$dict, $key, $value = null, $expire = PHP_INT_MAX, $extend = 
             $dict[DICT_TABLE][$idx][HASHTABLE_DELETED])
         {
             if (is_null($dict[DICT_TABLE][$idx][HASHTABLE_KEY])) {
+                // Ячейка была пустой, можем спокойно записать сюда данные.
                 $dict[DICT_FREE]--;
             }
             else if ($dict[DICT_TABLE][$idx][HASHTABLE_DELETED]) {
+                // Если ячейка была помечена как удаленная, то кол-во свободных ячеек уменьшать не нужно,
+                // а уменьшить надо кол-во ячеек помеченных удаленными.
                 $dict[DICT_DELETED]--;
             }
 
@@ -168,7 +183,7 @@ function dict_set(&$dict, $key, $value = null, $expire = PHP_INT_MAX, $extend = 
  */
 
 function dict_delete(&$dict, $key) {
-    if (!isset($dict) || !isset($key)) {
+    if (!isset($dict) || !isset($key) || !is_string($key)) {
         throw new InvalidArgumentException('dict_delete() some of mandatory variables are not set.');
     }
 

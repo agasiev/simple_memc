@@ -3,42 +3,69 @@
 /*
  * Простая реализация однопоточного а-ля memcache сервера.
  *
- * Собственная реализация ассоциативного массива. Т.к. условие было не использовать сторонние
- * библиотеки, а только чистый php без ООП, то за основу брались обычные массивы (хоть они по факту
- * тоже хэш таблицы и едят много памяти, но в данной задаче мы закрываем глаза на этот факт и
- * используем их как С-style массивы).
- *
+ * PHP 5.6 без ООП + pcntl + posix.
  */
 
 require 'dictionary.php';
 
-define("SIMPLE_MEMC_VERSION", "0.0.0.1");
+define("SIMPLE_MEMC_VERSION",      "0.0.0.1");
 define("SIMPLE_MEMC_DEFAULT_PORT", 12345);
-define("SIMPLE_MEMC_DEFAULT_PID", 'memcd.pid');
+define("SIMPLE_MEMC_DEFAULT_PID",  'memcd.pid');
+define("SIMPLE_MEMC_ERROR_LOG",    'error.log');
+define("SIMPLE_MEMC_APP_LOG",      'application.log');
+define("SIMPLE_MEMC_APP_ERROR_LOG",'application.error.log');
 define("SIMPLE_MEMC_DEFAULT_HOST", '127.0.0.1');
 
 $maintain_daemon_loop = true;
 $memcache_dict = dict_init();
+$init_time = time();
 
-function check_pid_file($pid_file) {
+/**
+ * Проверяем есть ли pid файл на диске и если он есть,
+ * то не запущено ли приложение с эти pid'ом.
+ *
+ * @param $pid_file Полный путь к pid файлу
+ * @return bool     true если файл существует и процесс с этим pid запущен
+ */
+
+function memc_check_pid_file($pid_file) {
     if (is_file($pid_file)) {
         $pid = file_get_contents($pid_file);
+
+        if (!is_int($pid)) {
+            return false;
+        }
 
         if (posix_kill($pid, 0)) {
             return true;
         }
     }
+
     return false;
 }
 
-function save_pid_file($pid_file) {
-    return file_put_contents($pid_file, getmypid());
+
+/**
+ * Создаем на диске pid файл.
+ *
+ * @param  $pid_file Полный путь к файлу.
+ * @return bool      true если смогли создать файл и записать в него pid.
+ */
+
+function memc_save_pid_file($pid_file) {
+    return file_put_contents($pid_file, getmypid()) ? true : false;
 }
 
-function signal_handler($signal) {
+/**
+ * Обработчик системных сигналов ОС.
+ *
+ * @param $signal id системного сигнала
+ */
+function memc_signal_handler($signal) {
     global $maintain_daemon_loop;
 
     switch ($signal) {
+        // SIGHUP не обрабатываем, т.к. нет конфиг. файла.
         case SIGTERM:
         case SIGINT:
             echo "Shutting down daemon.\n";
@@ -46,98 +73,26 @@ function signal_handler($signal) {
             break;
         default:
             echo "Recieved unprocessed signal $signal";
-    }
-}
-
-//$child_pid = pcntl_fork();
-//
-//if ($child_pid < 0) {
-//    echo "Error during pcntl_fork()\n";
-//    exit(0);
-//} else if ($child_pid) {
-//    echo "Started with pid $child_pid\n";
-//    exit(0);
-//}
-//
-//if (posix_setsid() < 0) {
-//    exit(0);
-//}
-
-$init_time = time();
-
-$options = getopt('p:P:h:');
-$pid_file = array_key_exists('p', $options) ? $options['p'] : dirname($argv[0]).'/'.SIMPLE_MEMC_DEFAULT_PID;
-$port = array_key_exists('P', $options) ? (int)$options['P'] : SIMPLE_MEMC_DEFAULT_PORT;
-$host = array_key_exists('h', $options) ? $options['h'] : SIMPLE_MEMC_DEFAULT_HOST;
-
-//fclose(STDIN);
-//fclose(STDOUT);
-//fclose(STDERR);
-
-openlog("simple_memcd", LOG_PID | LOG_NDELAY, LOG_DAEMON);
-echo "simple_memcd started at ".$host.":".$port."\n";
-//syslog(LOG_ERR, "simple_memcd started at ".$host.":".$port);
-
-if (check_pid_file($pid_file)) {
-    echo "Process already executed.\n";
-    exit(0);
-}
-
-if (!save_pid_file($pid_file)) {
-    echo "Cannot store pid file.\n";
-    exit(0);
-}
-
-pcntl_signal(SIGTERM, "signal_handler");
-pcntl_signal(SIGINT,  "signal_handler");
-
-if (($socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP)) === false) {
-    echo "socket_create() failed: reason: " . socket_strerror(socket_last_error()) . "\n";
-}
-socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
-
-if (socket_bind($socket, $host, $port) === false) {
-    echo "socket_bind() failed: reason: " . socket_strerror(socket_last_error($socket)) . "\n";
-}
-
-socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, array('sec' => 5, 'usec' => 0));
-socket_set_option($socket, SOL_SOCKET, SO_SNDTIMEO, array('sec' => 5, 'usec' => 0));
-
-if (socket_listen($socket, 5) === false) {
-    echo "socket_listen() failed: reason: " . socket_strerror(socket_last_error($socket)) . "\n";
-}
-
-while ($maintain_daemon_loop) {
-    pcntl_signal_dispatch();
-
-    if (($message_socket = socket_accept($socket)) === false) {
-        if (!socket_last_error($socket)) {
-            continue;
-        } else {
-            echo "Failed socket_accept() with reason: ".socket_strerror(socket_last_error($socket))."\n";
             break;
-        }
-    } else {
-        echo "connected!\n";
+    }
+}
+
+/**
+ * Обработчик REPL цикла.
+ *
+ * @param  mixed  $memcache_dict Хранилище ключей
+ * @param  string $request       Строка запроса
+ * @param  int    $init_time     Время запуска скрипта (для uptime)
+ *
+ * @return string Ответ, который нужно направить клиенту.
+ */
+function memc_process_request(&$memcache_dict, $request, $init_time) {
+    $request = trim($request);
+    if (!strlen($request)) {
+        return '';
     }
 
-
-    if (false === ($buf = socket_read($message_socket, 2048, PHP_NORMAL_READ))) {
-        if (!socket_last_error($message_socket)) {
-            continue;
-        } else {
-            echo "Failed socket_read() with reason: ".socket_strerror(socket_last_error($message_socket))."\n";
-            break;
-        }
-    }
-
-    $buf = trim($buf);
-    if (!strlen($buf)) {
-        continue;
-    }
-
-    $command_array = explode(' ', $buf, 2);
-
+    $command_array = explode(' ', $request, 2);
     var_dump($command_array);
 
     $command = '';
@@ -159,7 +114,7 @@ while ($maintain_daemon_loop) {
 
     switch ($command) {
         case 'set':
-            $data = explode('\r\n', $remainder, 2);
+            $data = explode('\n', $remainder, 2);
             var_dump($data);
 
             if (count($data) != 2) {
@@ -167,8 +122,8 @@ while ($maintain_daemon_loop) {
                 break;
             }
 
-            $key_and_expire = $data[0];
-            $store_data = $data[1];
+            $key_and_expire = trim($data[0]);
+            $store_data = trim($data[1]);
 
             $data = explode(" ", $key_and_expire, 2);
             var_dump($data);
@@ -183,9 +138,9 @@ while ($maintain_daemon_loop) {
 
             if ($expire >= 0 && $expire <= 30 * 24 * 3600) {
                 $response = dict_set($memcache_dict,
-                                     $key,
-                                     $store_data,
-                                     $expire == 0 ? PHP_INT_MAX : (time() + $expire)) ? "STORED\r\n" : "ERROR\r\n";
+                    $key,
+                    $store_data,
+                    $expire == 0 ? PHP_INT_MAX : (time() + $expire)) ? "STORED\r\n" : "ERROR\r\n";
             } else {
                 $response = "ERROR\r\n";
             }
@@ -217,22 +172,109 @@ while ($maintain_daemon_loop) {
             $response .= "STAT hashtable_deleted ".$memcache_dict[DICT_DELETED]."\r\n";
             $response .= "END\r\n";
             break;
-        case 'quit':
-            $response = "OK\r\n";
-            $maintain_current_connection = false;
-            break;
         default:
             $response = "UNKNOWN\r\n";
     }
 
-    var_dump($memcache_dict[DICT_TABLE]);
+    echo "Response\n'$response'\n";
+    return $response;
+}
 
-    foreach ($memcache_dict[DICT_TABLE] as $value) {
-        echo $value[HASHTABLE_KEY]."\n";
+// Парсим параметры командной строки.
+$options  = getopt('p:P:h:l:');
+$pid_file = array_key_exists('p', $options) ? realpath($options['p']) : realpath(dirname($argv[0])).'/'.SIMPLE_MEMC_DEFAULT_PID;
+$port     = array_key_exists('P', $options) ? (int)$options['P']      : SIMPLE_MEMC_DEFAULT_PORT;
+$host     = array_key_exists('h', $options) ? $options['h']           : SIMPLE_MEMC_DEFAULT_HOST;
+$log_dir  = array_key_exists('l', $options) ? realpath($options['l']) : realpath(dirname($argv[0]));
+
+// Демонизируем
+
+if (memc_check_pid_file($pid_file)) {
+    echo "Process already executed.\n";
+    exit(0);
+}
+
+umask(0);
+$child_pid = pcntl_fork();
+
+if ($child_pid < 0) {
+    echo "Error during pcntl_fork()\n";
+    exit(0);
+} else if ($child_pid) {
+    echo "Started with pid $child_pid\n";
+    exit(0);
+}
+
+if (posix_setsid() < 0) {
+    echo "posix_setsid() < 0\n";
+    exit(0);
+}
+
+chdir('/');
+
+if (!memc_save_pid_file($pid_file)) {
+    echo "Cannot store pid file.\n";
+    exit(0);
+}
+
+ini_set("error_log", $log_dir.'/'.SIMPLE_MEMC_ERROR_LOG);
+
+fclose(STDIN);
+fclose(STDOUT);
+fclose(STDERR);
+
+$STDIN = fopen('/dev/null', 'r');
+$STDOUT = fopen($log_dir.'/'.SIMPLE_MEMC_APP_LOG, 'ab');
+$STDERR = fopen($log_dir.'/'.SIMPLE_MEMC_APP_ERROR_LOG, 'ab');
+
+pcntl_signal(SIGTERM, "memc_signal_handler");
+pcntl_signal(SIGINT, "memc_signal_handler");
+
+if (($socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP)) === false) {
+    syslog(LOG_ERR, "Failed socket_create() with reason: ".socket_strerror(socket_last_error()));
+    exit(0);
+}
+
+socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, 1);
+socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, array('sec' => 5, 'usec' => 0));
+socket_set_option($socket, SOL_SOCKET, SO_SNDTIMEO, array('sec' => 5, 'usec' => 0));
+
+if (socket_bind($socket, $host, $port) === false) {
+    echo "Failed socket_bind() with reason: " . socket_strerror(socket_last_error($socket))."\n";
+    exit(0);
+}
+
+echo "simple_memcd started at ".$host.":".$port."\n";
+
+if (socket_listen($socket, 5) === false) {
+    echo "Failed socket_listen() with reason: ".socket_strerror(socket_last_error($socket))."\n";
+    exit(0);
+}
+
+while ($maintain_daemon_loop) {
+    pcntl_signal_dispatch();
+
+    if (($message_socket = socket_accept($socket)) === false) {
+        if (!socket_last_error($socket)) {
+            continue;
+        } else {
+            echo "Failed socket_accept() with reason: ".socket_strerror(socket_last_error($socket))."\n";
+            break;
+        }
+    } else {
+        echo "connected!\n";
     }
 
-    echo "Response\n'$response'\n";
+    if (false === ($buf = socket_read($message_socket, 2048, PHP_NORMAL_READ))) {
+        if (!socket_last_error($message_socket)) {
+            continue;
+        } else {
+            echo "Failed socket_read() with reason: ".socket_strerror(socket_last_error($message_socket))."\n";
+            break;
+        }
+    }
 
+    $response = memc_process_request($memcache_dict, $buf, $init_time);
     socket_write($message_socket, $response);
     socket_close($message_socket);
 }
@@ -241,6 +283,6 @@ socket_close($socket);
 @unlink($pid_file);
 closelog();
 
-echo "Stopped\n";
+echo "simple_memcd stopped\n";
 
 ?>
