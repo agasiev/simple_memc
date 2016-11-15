@@ -53,5 +53,7 @@ END<br>
 Примеры работы
 -
 ![Alt](https://github.com/agasiev/simple_memc/blob/master/images/get_demo.png "Сохраняем ключ")
-(https://github.com/agasiev/simple_memc/blob/master/images/set_demo.png "Получаем значение по ключу")
-(https://github.com/agasiev/simple_memc/blob/master/images/stats_demo.png "Статистика")
+-
+![Alt](https://github.com/agasiev/simple_memc/blob/master/images/set_demo.png "Получаем значение по ключу")
+-
+![Alt](https://github.com/agasiev/simple_memc/blob/master/images/stats_demo.png "Статистика")
