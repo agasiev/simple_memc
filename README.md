@@ -49,3 +49,9 @@ END<br>
 
 
 В веб интерфейсе, для удобства, имя команды не надо вводить, а можно выбрать из выпадающего списка.
+
+Примеры работы
+-
+(https://github.com/agasiev/simple_memc/blob/master/images/get_demo.png "Сохраняем ключ")
+(https://github.com/agasiev/simple_memc/blob/master/images/set_demo.png "Получаем значение по ключу")
+(https://github.com/agasiev/simple_memc/blob/master/images/stats_demo.png "Статистика")
