@@ -3,14 +3,15 @@
 define("HASHTABLE_KEY", 0);
 define("HASHTABLE_VALUE", 1);
 define("HASHTABLE_DELETED", 2);
+define("HASHTABLE_EXPIRED", 3);
 
 define("DICT_FREE", 0);
 define("DICT_DELETED", 1);
 define("DICT_HASH", 2);
 define("DICT_TABLE", 3);
 
-define("INITIAL_SIZE", 1024);
-define("EXTEND_STEP", 1024);       // Шаг увеличения размерности таблицы
+define("INITIAL_SIZE", 4);
+define("EXTEND_STEP", 4);       // Шаг увеличения размерности таблицы
 define("CLEANUP_THRESHOLD", 0.1);  // % от удаленных в таблице, после которого следует сделать чистку
 define("FREE_THRESHOLD", 0.2);     // % от свободных ячеек таблицы, опускаясь ниже которого ее следует расширить
 
@@ -43,13 +44,15 @@ function dict_init($hash_function='crc32', $initial_size = INITIAL_SIZE) {
         array_fill(
             0,
             $initial_size,
-            array(null, null, false) // [ключ, значение, удалено или нет]
+            array(null, null, false, 0) // [ключ, значение, удалено или нет, expire time]
         ) // хэш-таблица
     );
 }
 
 /**
- * Получаем значение из ассоциативного массива $dict по ключу $key
+ * Получаем значение из ассоциативного массива $dict по ключу $key.
+ *
+ * Если ключ стал expired, то помечаем его удаленным, но не делаем чистку таблицы.
  *
  * @param array  $dict    Ассоциативный массив.
  * @param string $key     Ключ, по которому мы хотим получить значение из $dict.
@@ -75,7 +78,17 @@ function dict_get(&$dict, $key, $default = null) {
             break;
         }
         else if ($dict[DICT_TABLE][$idx][HASHTABLE_KEY] == $key) {
-            return $dict[DICT_TABLE][$idx][HASHTABLE_DELETED] ? $default : $dict[DICT_TABLE][$idx][HASHTABLE_VALUE];
+            if ($dict[DICT_TABLE][$idx][HASHTABLE_DELETED]) {
+                return $default;
+            } else {
+                if ($dict[DICT_TABLE][$idx][HASHTABLE_EXPIRED] < time()) {
+                    $dict[DICT_TABLE][$idx][HASHTABLE_DELETED] = true;
+                    $dict[DICT_DELETED]++;
+                    return $default;
+                }
+
+                return $dict[DICT_TABLE][$idx][HASHTABLE_VALUE];
+            }
         }
     }
 
@@ -90,6 +103,8 @@ function dict_get(&$dict, $key, $default = null) {
  * @param array  $dict   Ассоциативный массив.
  * @param string $key    Ключ, по которому запишем данные из $value.
  * @param mixed  $value  Значение, сохраняемое по ключу $key.
+ * @param int    $expire Unix timestamp, по истечении которого ключ будет автоматически удален.
+ *                       По умолчанию - не удаляется.
  * @param bool   $extend true - расширить таблицу при необходимости, false - не раширять.
  *
  * @throws InvalidArgumentException
@@ -97,8 +112,8 @@ function dict_get(&$dict, $key, $default = null) {
  * @return bool true - если смогли вставить значение по ключу, false - если не смогли.
  */
 
-function dict_set(&$dict, $key, $value = null, $extend = true) {
-    if (!isset($dict) || !isset($key)) {
+function dict_set(&$dict, $key, $value = null, $expire = PHP_INT_MAX, $extend = true) {
+    if (!isset($dict) || !isset($key) || !is_string($key) || !is_int($expire) || $expire < 0) {
         throw new InvalidArgumentException('dict_set() some of mandatory variables are not set.');
     }
 
@@ -115,12 +130,21 @@ function dict_set(&$dict, $key, $value = null, $extend = true) {
     for ($i = 0; $i < $hash_table_size; $i++) {
         $idx = ($hash_value_idx + $i) % $hash_table_size;
 
-        if (is_null($dict[DICT_TABLE][$idx][HASHTABLE_KEY]) ||
-            $dict[DICT_TABLE][$idx][HASHTABLE_DELETED]
-        ) {
+        if ($dict[DICT_TABLE][$idx][HASHTABLE_KEY] === $key ||
+            is_null($dict[DICT_TABLE][$idx][HASHTABLE_KEY]) ||
+            $dict[DICT_TABLE][$idx][HASHTABLE_DELETED])
+        {
+            if (is_null($dict[DICT_TABLE][$idx][HASHTABLE_KEY])) {
+                $dict[DICT_FREE]--;
+            }
+            else if ($dict[DICT_TABLE][$idx][HASHTABLE_DELETED]) {
+                $dict[DICT_DELETED]--;
+            }
+
             $dict[DICT_TABLE][$idx][HASHTABLE_KEY] = $key;
             $dict[DICT_TABLE][$idx][HASHTABLE_VALUE] = $value;
-            $dict[DICT_FREE]--;
+            $dict[DICT_TABLE][$idx][HASHTABLE_DELETED] = false;
+            $dict[DICT_TABLE][$idx][HASHTABLE_EXPIRED] = $expire;
 
             return true;
         }
@@ -183,7 +207,7 @@ function dict_delete(&$dict, $key) {
  * Простейшая функция расширения и чистки хэш таблицы.
  *
  * Самая простая реализация расширения и чистки словаря на php. Увеличивает размер таблицы на $extend (EXTEND_STEP)
- * и чистит ключи помеченные как удаленные.
+ * и чистит ключи помеченные как удаленные или expired.
  *
  * Для улучшения, как минимум можно сделать:
  * 1) Реализовать другую политику расширения (например: чистить только удаленные, а не увеличивать размер таблицы
@@ -195,6 +219,8 @@ function dict_delete(&$dict, $key) {
  * @param int   $extend Шаг расширения таблицы. Сделан отдельным параметром, чтобы было легко делать чистку в dict_del.
  *
  * @throws InvalidArgumentException
+ *
+ * @return bool Всегда true.
  */
 
 function _dict_extend(&$dict, $extend = EXTEND_STEP) {
@@ -203,16 +229,26 @@ function _dict_extend(&$dict, $extend = EXTEND_STEP) {
     }
 
     $new_dict = dict_init($dict[DICT_HASH], count($dict[DICT_TABLE]) + $extend);
+    $current_time = time();
 
     for ($i = 0; $i < count($dict[DICT_TABLE]); $i++) {
-        if (!is_null($dict[DICT_TABLE][$i][HASHTABLE_KEY]) && !$dict[DICT_TABLE][$i][HASHTABLE_DELETED]) {
-            // Вызывать каждый раз функцию вставки не хорошо, но т.к. пишем простую реализацию,
+        if (!is_null($dict[DICT_TABLE][$i][HASHTABLE_KEY]) &&
+            !$dict[DICT_TABLE][$i][HASHTABLE_DELETED] &&
+            $dict[DICT_TABLE][$i][HASHTABLE_EXPIRED] > $current_time)
+        {
+            // Вызывать каждый раз функцию вставки очень не хорошо, но т.к. пишем простую реализацию,
             // то с её вызовом код становится сильно короче.
-            dict_set($new_dict, $dict[DICT_TABLE][$i][HASHTABLE_KEY], $dict[DICT_TABLE][$i][HASHTABLE_VALUE], false);
+            dict_set($new_dict,
+                     $dict[DICT_TABLE][$i][HASHTABLE_KEY],
+                     $dict[DICT_TABLE][$i][HASHTABLE_VALUE],
+                     $dict[DICT_TABLE][$i][HASHTABLE_EXPIRED],
+                     false);
         }
     }
 
     $dict = $new_dict;
+
+    return true;
 }
 
 ?>
